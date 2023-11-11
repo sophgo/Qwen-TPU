@@ -1,0 +1,6 @@
+[submodule "demo/third_party/abseil-cpp"]
+	path = demo/third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "demo/third_party/re2"]
+	path = demo/third_party/re2
+	url = https://github.com/google/re2.git

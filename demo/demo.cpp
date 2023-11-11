@@ -14,36 +14,18 @@
 #include <chrono>
 #include <algorithm>
 #include "memory.h"
-#include "sentencepiece/sentencepiece_processor.h"
+#include "tokenizer.h"
 #include "bmruntime_interface.h"
 #include <getopt.h>
 
-static const int NUM_LAYERS = 28;
+static const int NUM_LAYERS = 32;
 static const int MAX_LEN = 512;
 static const int HIDDEN_SIZE = 4096;
-static const uint16_t F16_ONE = 0x3C00;
+static const uint16_t BF16_NEG_10000 = 0xC61C; // -9984 by bfloat16
 
-static const std::string TOKENIZER_MODEL = "tokenizer.model";
+static const std::string TOKENIZER_MODEL = "qwen.tiktoken";
 
-// #define EXPORT_RESULTS
-#ifdef EXPORT_RESULTS
-#include "cnpy.h"
-static cnpy::npz_t map;
-
-template <typename T>
-static void add_array(std::string name, bm_handle_t bm_handle,
-                      const bm_device_mem_t &dst) {
-  std::vector<T> data(dst.size / sizeof(T));
-  bm_memcpy_d2s(bm_handle, data.data(), dst);
-  cnpy::npz_add_array(map, name, data);
-}
-
-static void save_array(std::string filename) {
-  cnpy::npz_save_all(filename, map);
-}
-#endif
-
-class ChatGLM {
+class QwenChat {
 public:
   void init(const std::vector<int> &devid, std::string model);
   void chat();
@@ -55,13 +37,12 @@ private:
   int forward_first(std::vector<int> &tokens);
   int forward_next();
   void move2end(const bm_tensor_t &kv);
-  void load_sentencepiece();
+  void load_tiktoken();
 
 private:
   std::vector<bm_handle_t> handles;
   bm_handle_t bm_handle;
   void *p_bmrt;
-  sentencepiece::SentencePieceProcessor sentencepiece;
   const bm_net_info_t *net_blocks[NUM_LAYERS];
   const bm_net_info_t *net_blocks_cache[NUM_LAYERS];
   const bm_net_info_t *net_embed;
@@ -74,32 +55,24 @@ private:
   std::string name_lm;
   std::string name_blocks[NUM_LAYERS];
   std::string name_blocks_cache[NUM_LAYERS];
-  std::string history = "";
-  int round = 0;
   int token_length;
-  int EOS;
+  std::unique_ptr<QwenTokenizer> tk;
+  std::vector<std::string> history;
 };
 
-void ChatGLM::load_sentencepiece() {
-  printf("Load %s ... ", TOKENIZER_MODEL.c_str());
-  auto status = sentencepiece.Load(TOKENIZER_MODEL);
-  if (!status.ok()) {
-    std::cout << status.ToString() << std::endl;
-    exit(-1);
-  }
-  EOS = sentencepiece.eos_id();
-  printf("Done!\n");
+void QwenChat::load_tiktoken() {
+  printf("Load %s ... \n", TOKENIZER_MODEL.c_str());
+  tk = std::make_unique<QwenTokenizer>(TOKENIZER_MODEL);
 }
 
-void ChatGLM::init(const std::vector<int> &devices, std::string model) {
-  load_sentencepiece();
+void QwenChat::init(const std::vector<int> &devices, std::string model) {
+  load_tiktoken();
   // request bm_handle
   std::cout << "Device [ ";
   for (auto d : devices) {
     std::cout << d << " ";
   }
   std::cout << "] loading ....\n";
-  int device_num = devices.size();
   for (auto d : devices) {
     bm_handle_t h;
     bm_status_t status = bm_dev_request(&h, d);
@@ -107,8 +80,12 @@ void ChatGLM::init(const std::vector<int> &devices, std::string model) {
     handles.push_back(h);
   }
   bm_handle = handles[0];
-  // create bmruntime
-  p_bmrt = bmrt_create_ex(handles.data(), device_num);
+// create bmruntime
+#ifdef SOC_TARGET
+  p_bmrt = bmrt_create(handles[0]);
+#else
+  p_bmrt = bmrt_create_ex(handles.data(), handles.size());
+#endif
   assert(NULL != p_bmrt);
 
   // load bmodel by file
@@ -120,8 +97,8 @@ void ChatGLM::init(const std::vector<int> &devices, std::string model) {
   name_embed = "embedding";
   name_lm = "lm_head";
   for (int i = 0; i < NUM_LAYERS; i++) {
-    name_blocks[i] = "glm_block_" + std::to_string(i);
-    name_blocks_cache[i] = "glm_block_cache_" + std::to_string(i);
+    name_blocks[i] = "qwen_block_" + std::to_string(i);
+    name_blocks_cache[i] = "qwen_block_cache_" + std::to_string(i);
   }
 
   // net infos
@@ -175,7 +152,7 @@ void ChatGLM::init(const std::vector<int> &devices, std::string model) {
   assert(true == ret);
 }
 
-void ChatGLM::deinit() {
+void QwenChat::deinit() {
   bm_free_device(bm_handle, inputs_embed_512.device_mem);
   bm_free_device(bm_handle, outputs_embed_512.device_mem);
   bm_free_device(bm_handle, inputs_lm.device_mem);
@@ -195,7 +172,7 @@ void ChatGLM::deinit() {
 }
 
 // after first block, move real result to end of mem
-void ChatGLM::move2end(const bm_tensor_t &kv) {
+void QwenChat::move2end(const bm_tensor_t &kv) {
   if (token_length >= MAX_LEN) {
     return;
   }
@@ -214,24 +191,19 @@ void ChatGLM::move2end(const bm_tensor_t &kv) {
   delete[] dst;
 }
 
-int ChatGLM::forward_first(std::vector<int> &tokens) {
+int QwenChat::forward_first(std::vector<int> &tokens) {
   std::vector<int> input_ids(MAX_LEN, 0);
   std::vector<int> position_id(MAX_LEN, 0);
-  std::vector<uint16_t> attention_mask(MAX_LEN * MAX_LEN, 0);
+  std::vector<uint16_t> attention_mask(MAX_LEN * MAX_LEN, BF16_NEG_10000);
+  std::copy(tokens.begin(), tokens.end(), input_ids.data());
 
-  input_ids[0] = 64790;
-  input_ids[1] = 64792;
-  std::copy(tokens.begin(), tokens.end(), input_ids.data() + 2);
-
-  token_length = tokens.size() + 2;
   for (int i = 0; i < token_length; i++) {
     position_id[i] = i;
   }
-  for (int i = 0; i < MAX_LEN; i++) {
+  for (int i = 0; i < token_length; i++) {
     for (int j = 0; j < MAX_LEN; j++) {
-      if (j <= i && i < token_length) {
-      } else {
-        attention_mask[i * MAX_LEN + j] = F16_ONE;
+      if (j <= i) {
+        attention_mask[i * MAX_LEN + j] = 0;
       }
     }
   }
@@ -250,7 +222,6 @@ int ChatGLM::forward_first(std::vector<int> &tokens) {
   bm_memcpy_s2d(bm_handle, inputs_attention.device_mem,
                 (void *)attention_mask.data());
   auto inputs_embed = outputs_embed_512;
-  inputs_embed.shape = net_blocks[0]->stages[0].input_shapes[0];
   bm_tensor_t inputs_block[3] = {inputs_embed, inputs_pid, inputs_attention};
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_tensor_t outputs_block[3] = {inputs_embed, past_key[i], past_value[i]};
@@ -273,10 +244,10 @@ int ChatGLM::forward_first(std::vector<int> &tokens) {
   return token;
 }
 
-int ChatGLM::forward_next() {
+int QwenChat::forward_next() {
   std::vector<uint16_t> attention_mask(MAX_LEN + 1, 0);
   for (int i = 0; i <= MAX_LEN - token_length; i++) {
-    attention_mask[i] = F16_ONE;
+    attention_mask[i] = BF16_NEG_10000;
   }
   int32_t position_id = token_length - 1;
   // embedding
@@ -290,7 +261,6 @@ int ChatGLM::forward_next() {
                 (void *)attention_mask.data());
   bm_memcpy_s2d(bm_handle, next_pid.device_mem, (void *)&position_id);
   auto inputs_embed = inputs_lm;
-  inputs_embed.shape = net_blocks_cache[0]->stages[0].input_shapes[0];
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_tensor_t inputs_block[5] = {inputs_embed, next_pid, next_attention,
                                    past_key[i], past_value[i]};
@@ -300,7 +270,6 @@ int ChatGLM::forward_next() {
     assert(ret);
     bm_thread_sync(bm_handle);
   }
-  outputs_lm.shape = net_lm->stages[0].output_shapes[0];
   ret = bmrt_launch_tensor_ex(p_bmrt, name_lm.c_str(), &inputs_lm, 1,
                               &outputs_lm, 1, true, false);
   bm_thread_sync(bm_handle);
@@ -309,13 +278,20 @@ int ChatGLM::forward_next() {
   return token;
 }
 
-void ChatGLM::chat() {
+void QwenChat::chat() {
   while (true) {
     std::cout << "\nQuestion: ";
     std::string input_str;
     std::getline(std::cin, input_str);
-    if (input_str == "exit") {
+    if (input_str.empty()) {
+      continue;
+    }
+    if (input_str == "exit" || input_str == "quit") {
       break;
+    }
+    if (input_str == "clear") {
+      history.clear();
+      continue;
     }
     std::cout << "\nAnswer: " << std::flush;
     answer(input_str);
@@ -323,44 +299,23 @@ void ChatGLM::chat() {
   }
 }
 
-void ChatGLM::answer(const std::string &input_str) {
-  // auto time_0 = std::chrono::system_clock::now();
-  history += ("[Round " + std::to_string(round + 1) + "]\n\n问：" + input_str +
-              "\n\n答：");
+void QwenChat::answer(const std::string &input_str) {
   int tok_num = 0;
-  std::vector<int> tokens;
-  sentencepiece.Encode(history, &tokens);
-  if (tokens.empty()) {
-    printf("Sorry: your question is too wierd!!\n");
-    history = "";
-    round = 0;
-    return;
-  }
-  // make sure token not too large
-  if (tokens.size() > MAX_LEN - 10) {
-    // reset
-    if (round == 0) {
-      printf("Error: your question is too large!\n");
-      return;
-    }
-    round = 0;
-    history = "";
-    answer(input_str);
-    return;
-  }
+  history.emplace_back(std::move(input_str));
+  auto input_ids = tk->encode_history(history, MAX_LEN);
+  token_length = input_ids.size();
   auto time_1 = std::chrono::system_clock::now();
   int pre_token = 0;
-  int token = forward_first(tokens);
+  int token = forward_first(input_ids);
   auto time_2 = std::chrono::system_clock::now();
-  while (token != EOS && token_length < MAX_LEN) {
-    std::string pre_word;
-    std::string word;
+  std::string result;
+  while (token != tk->im_end_id && token_length < MAX_LEN) {
     std::vector<int> pre_ids = {pre_token};
     std::vector<int> ids = {pre_token, token};
-    sentencepiece.Decode(pre_ids, &pre_word);
-    sentencepiece.Decode(ids, &word);
+    auto pre_word = tk->decode(pre_ids);
+    auto word = tk->decode(ids);
     std::string diff = word.substr(pre_word.size());
-    history += diff;
+    result += diff;
     std::cout << diff << std::flush;
     if (token_length < MAX_LEN) {
       token_length++;
@@ -369,8 +324,6 @@ void ChatGLM::answer(const std::string &input_str) {
     token = forward_next();
   }
   auto time_3 = std::chrono::system_clock::now();
-  // auto tht_dur =
-  //     std::chrono::duration_cast<std::chrono::microseconds>(time_3 - time_0);
   auto ftl_dur =
       std::chrono::duration_cast<std::chrono::microseconds>(time_2 - time_1);
   auto tps_dur =
@@ -378,13 +331,7 @@ void ChatGLM::answer(const std::string &input_str) {
   double tps = tok_num / (tps_dur.count() * 1e-6);
   // double tht = tokens.size() / (tht_dur.count() * 1e-6);
   printf("\nFTL:%f s, TPS: %f tokens/s\n", ftl_dur.count() * 1e-6, tps);
-  if (token_length >= MAX_LEN) {
-    round = 0;
-    history = history.substr(history.size() / 2);
-  } else {
-    history += "\n\n";
-    round++;
-  }
+  history.emplace_back(result);
 }
 
 static void split(const std::string &s, const std::string &delim,
@@ -419,7 +366,7 @@ void Usage() {
          "set, use 0\n");
 }
 
-void processArguments(int argc, char *argv[], std::string &chatglm_model,
+void processArguments(int argc, char *argv[], std::string &qwen_model,
                       std::vector<int> &devices) {
   struct option longOptions[] = {{"model", required_argument, nullptr, 'm'},
                                  {"devid", required_argument, nullptr, 'd'},
@@ -433,7 +380,7 @@ void processArguments(int argc, char *argv[], std::string &chatglm_model,
                                &optionIndex)) != -1) {
     switch (option) {
     case 'm':
-      chatglm_model = optarg;
+      qwen_model = optarg;
       break;
     case 'd':
       devices = parseCascadeDevices(optarg);
@@ -452,20 +399,20 @@ void processArguments(int argc, char *argv[], std::string &chatglm_model,
 
 int main(int argc, char **argv) {
   // set your bmodel path here
-  printf("Demo for ChatGLM in BM1684X, support ChatGLM1/2/3\n");
-  std::string chatglm_model;
+  printf("Demo for QwenChat in BM1684X\n");
+  std::string qwen_model;
   std::vector<int> devices = {0};
-  processArguments(argc, argv, chatglm_model, devices);
-  if (chatglm_model.empty()) {
+  processArguments(argc, argv, qwen_model, devices);
+  if (qwen_model.empty()) {
     Usage();
     exit(EXIT_FAILURE);
   }
 
-  ChatGLM glm;
+  QwenChat qwen;
   printf("Init Environment ...\n");
-  glm.init(devices, chatglm_model);
+  qwen.init(devices, qwen_model);
   printf("==========================\n");
-  glm.chat();
-  glm.deinit();
+  qwen.chat();
+  qwen.deinit();
   return 0;
 }
