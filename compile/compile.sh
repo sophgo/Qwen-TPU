@@ -36,7 +36,7 @@ if [ x$mode == x"int8" ]; then
 elif [ x$mode == x"bf16" ]; then
     quantize_args="--quantize BF16"
 elif [ x$mode == x"int4" ]; then
-    quantize_args="--quantize W4BF16"
+    quantize_args="--quantize W4BF16 --q_group_size 64"
 else
     echo "Error, unknown quantize mode"
     exit 1
@@ -63,7 +63,7 @@ model_transform.py \
 
 model_deploy.py \
     --mlir embedding_$seqlen.mlir \
-    ${quantize_args} \
+    --quantize BF16 \
     --quant_input \
     --quant_output \
     --chip bm1684x \
@@ -78,7 +78,7 @@ model_transform.py \
 
 model_deploy.py \
     --mlir embedding_1.mlir \
-    ${quantize_args} \
+    --quantize BF16 \
     --quant_input \
     --quant_output \
     --chip bm1684x \
