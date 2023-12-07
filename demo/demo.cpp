@@ -329,9 +329,16 @@ void QwenChat::answer(const std::string &input_str) {
   auto tps_dur =
       std::chrono::duration_cast<std::chrono::microseconds>(time_3 - time_2);
   double tps = tok_num / (tps_dur.count() * 1e-6);
+  if (token_length >= MAX_LEN) {
+    printf(" ......\nWarning: cleanup early history\n");
+  }
   // double tht = tokens.size() / (tht_dur.count() * 1e-6);
   printf("\nFTL:%f s, TPS: %f tokens/s\n", ftl_dur.count() * 1e-6, tps);
   history.emplace_back(result);
+  if (token_length + 128 >= MAX_LEN) {
+    int num = (history.size() + 3) / 4 * 2;
+    history.erase(history.begin(), history.begin() + num);
+  }
 }
 
 static void split(const std::string &s, const std::string &delim,
