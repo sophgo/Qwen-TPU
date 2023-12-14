@@ -12,11 +12,11 @@
 
 ``` shell
 git lfs install
-git git@hf.co:Qwen/Qwen-7B-Chat
+git clone git@hf.co:Qwen/Qwen-7B-Chat
 ```
 
 该工程比较大，会花较长时间。并对该工程做如下修改。
-
+也可以将本项目下的`utils/config.json`和`utils/modeling_qwen.py`替换至`Qwen-7B-Chat`下的对应文件。
 #### 调整`config.json`文件中参数配置
 
 ```json
@@ -84,14 +84,15 @@ git git@hf.co:Qwen/Qwen-7B-Chat
 ### 2. 下载本项目`Qwen-TPU`
 
 下载本项目，并导出所有的ONNX，如下：
-
 ``` shell
 git clone git@github.com:sophgo/Qwen-TPU.git
-git submodule update --init
 
-cd Qwen-TPU/compile
-pip install transformers_stream_generator einops tiktoken
+cd Qwen-TPU
+git submodule update --init
 export PYTHONPATH=$PWD/../Qwen-7B-Chat:$PYTHONPATH
+
+cd compile
+pip install transformers_stream_generator einops tiktoken
 python3 export_onnx.py
 ```
 
@@ -122,7 +123,8 @@ source ./envsetup.sh
 
 注意此时在Docker环境workspace目录。
 
-目前TPU-MLIR支持对`Qwen-7B`进行BF16、INT8和INT4量化，且支持多芯分布式推理，默认情况下会进行INT8量化和单芯推理，最终生成`qwen-7b_int8.bmodel`文件
+目前TPU-MLIR支持对`Qwen-7B`进行BF16、INT8和INT4量化，且支持多芯分布式推理，默认情况下会进行INT8量化和单芯推理，最终生成`qwen-7b_int8.bmodel`文件。
+目前转INT8模型时需要在`Qwen-TPU/compile/compile.sh`中注释掉104行`${quantize_args} \`,并且在下一行新增`--quantize BF16 \`。
 
 ```shell
 ./compile.sh
@@ -145,7 +147,6 @@ cd build
 cmake ..
 make
 ```
-
 
 编译生成qwen可执行程序，将`qwen`、`qwen-7b_int8.bmodel`和`qwen.tiktoken`拷贝到同一个目录下就可以执行了。
 (`qwen.tiktoken`来自[Qwen-7B-Chat](https://huggingface.co/Qwen/Qwen-7B-Chat))。
