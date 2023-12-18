@@ -4,3 +4,9 @@
 [submodule "demo/third_party/re2"]
 	path = demo/third_party/re2
 	url = https://github.com/google/re2.git
+[submodule "webdemo/third_party/abseil-cpp"]
+	path = webdemo/third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "webdemo/third_party/re2"]
+	path = webdemo/third_party/re2
+	url = https://github.com/google/re2.git

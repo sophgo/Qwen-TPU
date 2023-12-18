@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.10)
+project(qwen)
+
+if (NOT DEFINED TARGET_ARCH)
+    set(TARGET_ARCH pcie)
+endif()
+
+include_directories(${PROJECT_SOURCE_DIR}/include)
+
+set(CMAKE_INSTALL_PREFIX install)
+
+if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "aarch64")
+	add_definitions(-DSOC_TARGET)
+	link_directories(${PROJECT_SOURCE_DIR}/lib_soc)
+	message("SoC mode, starting......")
+elseif (${TARGET_ARCH} STREQUAL "pcie")
+    add_definitions(-DPCIE_TARGET)
+    link_directories(${PROJECT_SOURCE_DIR}/lib_pcie)
+	message("Pcie mode, starting......")
+elseif (${TARGET_ARCH} STREQUAL "soc")
+    add_definitions(-DSOC_TARGET)
+    set(CMAKE_C_COMPILER /opt/aarch64-linux-gnu-7.5.0/bin/aarch64-linux-gnu-gcc)
+    set(CMAKE_ASM_COMPILER /opt/aarch64-linux-gnu-7.5.0/bin/aarch64-linux-gnu-gcc)
+    set(CMAKE_CXX_COMPILER /opt/aarch64-linux-gnu-7.5.0/bin/aarch64-linux-gnu-g++)
+    link_directories(${PROJECT_SOURCE_DIR}/lib_soc)
+	message("SoC mode, starting......")
+endif()
+
+add_definitions(-DDEBUG --std=c++17 -fPIC -Wall -Werror)
+set(CMAKE_BUILD_TYPE "Debug")
+
+set(ABSL_ENABLE_INSTALL ON)
+set(ABSL_PROPAGATE_CXX_STD ON)
+add_subdirectory(third_party/abseil-cpp)
+add_subdirectory(third_party/re2)
+
+file(GLOB _SOURCES ${PROJECT_SOURCE_DIR}/*.cpp)
+add_library(qwenc SHARED ${_SOURCES})
+add_executable(qwen ${_SOURCES})
+target_link_libraries(qwen bmrt bmlib re2)
+target_link_libraries(qwenc bmlib bmrt re2)
