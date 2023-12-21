@@ -124,7 +124,7 @@ source ./envsetup.sh
 注意此时在Docker环境workspace目录。
 
 目前TPU-MLIR支持对`Qwen-7B`进行BF16、INT8和INT4量化，且支持多芯分布式推理，默认情况下会进行INT8量化和单芯推理，最终生成`qwen-7b_int8.bmodel`文件。
-目前转INT8模型时需要在`Qwen-TPU/compile/compile.sh`中注释掉104行`${quantize_args} \`,并且在下一行新增`--quantize BF16 \`。
+目前转INT8模型时需要在`Qwen-TPU/compile/compile.sh`中将第104行`${quantize_args} \`,改为`--quantize BF16 \`。
 
 ```shell
 ./compile.sh
