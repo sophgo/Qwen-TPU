@@ -246,6 +246,35 @@ class QwenChat:
             self.cur_token = next_token
         self.history.append(res)
         return res
+    
+    def predict_no_state(self, question: str, history: list):
+        # question: "你多大了？" history: ["你是谁？", "我是Qwen。"]
+        self.history = history
+        self.history.append(question)
+        self.history_to_c()
+        str2tokens(self.chat, self.history_c, self.tokens)
+
+        first_token = predict_first_token_with_tokens(self.chat, self.tokens.data[:self.tokens.size])
+        first_str   = token2str_with_pre(self.chat, first_token)
+
+        res = first_str
+        self.cur_token = first_token
+
+        while True:
+            if self.cur_token == self.eos:
+                break
+            if self.token_len >= MAX_LEN:
+                print("......\n Warning: cleanup early history")
+                break
+            next_token = predict_next_token(self.chat)
+            next_str   = token2str_with_pre(self.chat, next_token)
+            # print(next_str, end='',flush=True)
+            res += next_str
+            self.cur_token = next_token
+
+            yield {
+                "data": res
+            }
 
     # def predict_without_history()
 
