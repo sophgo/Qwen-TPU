@@ -20,7 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import numpy as np
 
-QWEN_PATH = "../Qwen-7B-Chat"
+QWEN_PATH = "../../Qwen-7B-Chat"
 folder = "./tmp/onnx"
 device = torch.device("cuda:0")
 origin_model = AutoModelForCausalLM.from_pretrained(
@@ -92,7 +92,7 @@ class QwenBlockCache(torch.nn.Module):
             rotary_pos_emb_list=[[cos_pos, sin_pos]],
             use_cache=True)
         k, v = past_kv
-        return hidden_states.float(), k[:, 1:].float(), v[:, 1:].float()
+        return hidden_states.float(), k.float(), v.float()
 
 
 class LmHead(torch.nn.Module):
