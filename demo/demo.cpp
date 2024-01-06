@@ -51,6 +51,8 @@ private:
   bm_tensor_t inputs_lm, outputs_lm;
   bm_tensor_t inputs_pid, next_pid, inputs_attention, next_attention;
   bm_tensor_t past_key[NUM_LAYERS], past_value[NUM_LAYERS];
+  bm_tensor_t present_key[NUM_LAYERS], present_value[NUM_LAYERS];
+  bm_tensor_t present_key_cache, present_value_cache;
   std::string name_embed;
   std::string name_lm;
   std::string name_blocks[NUM_LAYERS];
@@ -143,7 +145,19 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
     ret = bmrt_tensor(&past_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
                       net_blocks[0]->stages[0].output_shapes[2]);
     assert(true == ret);
+    ret = bmrt_tensor(&present_key[i], p_bmrt, net_blocks[0]->output_dtypes[1],
+                      net_blocks[0]->stages[0].output_shapes[1]);
+    assert(true == ret);
+    ret = bmrt_tensor(&present_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
+                      net_blocks[0]->stages[0].output_shapes[2]);
+    assert(true == ret);
   }
+  ret = bmrt_tensor(&present_key_cache, p_bmrt, net_blocks_cache[0]->output_dtypes[1],
+                    net_blocks_cache[0]->stages[0].output_shapes[1]);
+  assert(true == ret);
+  ret = bmrt_tensor(&present_value_cache, p_bmrt, net_blocks_cache[0]->output_dtypes[2],
+                    net_blocks_cache[0]->stages[0].output_shapes[2]);
+  assert(true == ret);
   ret = bmrt_tensor(&inputs_lm, p_bmrt, net_lm->input_dtypes[0],
                     net_lm->stages[0].input_shapes[0]);
   assert(true == ret);
@@ -161,9 +175,13 @@ void QwenChat::deinit() {
   bm_free_device(bm_handle, next_pid.device_mem);
   bm_free_device(bm_handle, inputs_attention.device_mem);
   bm_free_device(bm_handle, next_attention.device_mem);
+  bm_free_device(bm_handle, present_key_cache.device_mem);
+  bm_free_device(bm_handle, present_value_cache.device_mem);
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_free_device(bm_handle, past_key[i].device_mem);
     bm_free_device(bm_handle, past_value[i].device_mem);
+    bm_free_device(bm_handle, present_key[i].device_mem);
+    bm_free_device(bm_handle, present_value[i].device_mem);
   }
   bmrt_destroy(p_bmrt);
   for (auto h : handles) {
@@ -229,8 +247,6 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
                                 outputs_block, 3, true, false);
     assert(ret);
     bm_thread_sync(bm_handle);
-    move2end(past_key[i]);
-    move2end(past_value[i]);
   }
   int bytes = inputs_embed.device_mem.size / MAX_LEN;
   bm_memcpy_d2d_byte(bm_handle, inputs_lm.device_mem, 0,
@@ -246,7 +262,10 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
 
 int QwenChat::forward_next() {
   std::vector<uint16_t> attention_mask(MAX_LEN + 1, 0);
-  for (int i = 0; i <= MAX_LEN - token_length; i++) {
+  // for (int i = 0; i <= MAX_LEN - token_length; i++) {
+  //   attention_mask[i] = BF16_NEG_10000;
+  // }
+  for (int i = token_length - 1; i < MAX_LEN; i++) {
     attention_mask[i] = BF16_NEG_10000;
   }
   int32_t position_id = token_length - 1;
@@ -261,14 +280,23 @@ int QwenChat::forward_next() {
                 (void *)attention_mask.data());
   bm_memcpy_s2d(bm_handle, next_pid.device_mem, (void *)&position_id);
   auto inputs_embed = inputs_lm;
+  inputs_embed.shape = net_blocks_cache[0]->stages[0].input_shapes[0];
+  int bytes = bm_mem_get_device_size(present_key_cache.device_mem);
+  int token_offset = (token_length - 1) * bytes;
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_tensor_t inputs_block[5] = {inputs_embed, next_pid, next_attention,
                                    past_key[i], past_value[i]};
-    bm_tensor_t outputs_block[3] = {inputs_embed, past_key[i], past_value[i]};
+    bm_tensor_t outputs_block[3] = {inputs_embed, present_key_cache, present_value_cache};
     ret = bmrt_launch_tensor_ex(p_bmrt, name_blocks_cache[i].c_str(),
                                 inputs_block, 5, outputs_block, 3, true, false);
     assert(ret);
     bm_thread_sync(bm_handle);
+    bm_memcpy_d2d_byte(bm_handle, past_key[i].device_mem, token_offset,
+                       present_key_cache.device_mem, 0,
+                       bytes);
+    bm_memcpy_d2d_byte(bm_handle, past_value[i].device_mem, token_offset,
+                       present_value_cache.device_mem, 0,
+                       bytes);
   }
   ret = bmrt_launch_tensor_ex(p_bmrt, name_lm.c_str(), &inputs_lm, 1,
                               &outputs_lm, 1, true, false);
