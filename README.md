@@ -15,71 +15,8 @@ git lfs install
 git clone git@hf.co:Qwen/Qwen-7B-Chat
 ```
 
-该工程比较大，会花较长时间。并对该工程做如下修改。
-也可以将本项目下的`utils/config.json`和`utils/modeling_qwen.py`替换至`Qwen-7B-Chat`下的对应文件。
-#### 调整`config.json`文件中参数配置
-
-```json
-  "bf16": true,
-  "max_position_embeddings": 512,
-  "seq_length": 512,
-```
-
-我们采用bf16导出ONNX模型，原因是该模型是通过bf16训练的。用F32也可以，但是这样ONNX体积太大。
-
-#### 对`modeling_qwen.py`文件代码做调整
-
-1) 第一点修改如下（这是因为TORCH2的算子转ONNX会失败）：
-
-    ``` python
-    # SUPPORT_TORCH2 = hasattr(torch, '__version__') and int(torch.__version__.split(".")[0]) >= 2
-    SUPPORT_TORCH2 = False
-    ```
-
-2) 第二点修改如下（这是因为转ONNX，提示Shape推导失败）：
-
-    ```python
-    # attn_weights = attn_weights / torch.full(
-    #     [],
-    #     size_temp ** 0.5,
-    #     dtype=attn_weights.dtype,
-    #     device=attn_weights.device,
-    # )
-    attn_weights = attn_weights / (size_temp ** 0.5)
-    ```
-
-3) 第三点修改如下（这段代码全部注释掉，是因为可以直接采用`attention_mask`，避免复杂逻辑，提升性能）：
-
-    ```python
-    # if self.use_cache_quantization:
-    #     query_length, key_length = query.size(-2), key[0].size(-2)
-    # else:
-    #     query_length, key_length = query.size(-2), key.size(-2)
-    # causal_mask = registered_causal_mask[
-    #     :, :, key_length - query_length : key_length, :key_length
-    # ]
-    # mask_value = torch.finfo(attn_weights.dtype).min
-    # mask_value = torch.full([], mask_value, dtype=attn_weights.dtype).to(
-    #     attn_weights.device
-    # )
-    # attn_weights = torch.where(
-    #     causal_mask, attn_weights.to(attn_weights.dtype), mask_value
-    # )
-    ```
-
-4) 第四点修改如下（同上原因）：
-
-    ``` python
-    # query_length, key_length = query.size(-2), key.size(-2)
-    # causal_mask = registered_causal_mask[
-    #     :, :, key_length - query_length : key_length, :key_length
-    # ]
-    # mask_value = torch.finfo(attn_weights.dtype).min
-    # mask_value = torch.tensor(mask_value, dtype=attn_weights.dtype).to(
-    #     attn_weights.device
-    # )
-    # attn_weights = torch.where(causal_mask, attn_weights, mask_value)
-    ```
+该工程比较大，会花较长时间。
+并将本项目下的`files/Qwen-7B-Chat`中的文件替换至`Qwen-7B-Chat`下的对应文件。
 
 ### 2. 下载本项目`Qwen-TPU`
 
@@ -179,3 +116,81 @@ make
 tiktoken官方没有C++版本，只有python版本。
 本工程使用[QwenLM/qwen.cpp](https://github.com/QwenLM/qwen.cpp)中的tiktoken处理代码。
 
+### Qwen-7B-Chat做了哪些修改
+
+只对`config.json`和`modeling_qwen.py`做了部分调整。
+
+#### 1. 调整`config.json`文件中参数配置
+
+```json
+  "bf16": true,
+  "max_position_embeddings": 512,
+  "seq_length": 512,
+```
+
+我们采用bf16导出ONNX模型，原因是该模型是通过bf16训练的。用F32也可以，但是这样ONNX体积太大。
+
+#### 2. 对`modeling_qwen.py`文件代码做调整
+
+1) 第一点修改如下（这是因为TORCH2的算子转ONNX会失败）：
+
+    ``` python
+    # SUPPORT_TORCH2 = hasattr(torch, '__version__') and int(torch.__version__.split(".")[0]) >= 2
+    SUPPORT_TORCH2 = False
+    ```
+
+2) 第二点修改如下（这是因为转ONNX，提示Shape推导失败）：
+
+    ```python
+    # attn_weights = attn_weights / torch.full(
+    #     [],
+    #     size_temp ** 0.5,
+    #     dtype=attn_weights.dtype,
+    #     device=attn_weights.device,
+    # )
+    attn_weights = attn_weights / (size_temp ** 0.5)
+    ```
+
+3) 第三点修改如下（这段代码全部注释掉，是因为可以直接采用`attention_mask`，避免复杂逻辑，提升性能）：
+
+    ```python
+    # if self.use_cache_quantization:
+    #     query_length, key_length = query.size(-2), key[0].size(-2)
+    # else:
+    #     query_length, key_length = query.size(-2), key.size(-2)
+    # causal_mask = registered_causal_mask[
+    #     :, :, key_length - query_length : key_length, :key_length
+    # ]
+    # mask_value = torch.finfo(attn_weights.dtype).min
+    # mask_value = torch.full([], mask_value, dtype=attn_weights.dtype).to(
+    #     attn_weights.device
+    # )
+    # attn_weights = torch.where(
+    #     causal_mask, attn_weights.to(attn_weights.dtype), mask_value
+    # )
+    ```
+
+4) 第四点修改如下（同上原因）：
+
+    ``` python
+    # query_length, key_length = query.size(-2), key.size(-2)
+    # causal_mask = registered_causal_mask[
+    #     :, :, key_length - query_length : key_length, :key_length
+    # ]
+    # mask_value = torch.finfo(attn_weights.dtype).min
+    # mask_value = torch.tensor(mask_value, dtype=attn_weights.dtype).to(
+    #     attn_weights.device
+    # )
+    # attn_weights = torch.where(causal_mask, attn_weights, mask_value)
+    ```
+
+5) 第五点修改，将如下代码移至`if layer_past is not None:`之前：
+
+    ``` python
+    if use_cache:
+        present = (key, value)
+    else:
+        present = None
+    ```
+
+    这是因为kv cache只用输出1个单位就可以了，不用全部输出。提升效率。
