@@ -19,7 +19,6 @@
 #include <getopt.h>
 
 static const int NUM_LAYERS = 32;
-static const int MAX_LEN = 512;
 static const int HIDDEN_SIZE = 4096;
 static const uint16_t BF16_NEG_10000 = 0xC61C; // -9984 by bfloat16
 
@@ -47,7 +46,7 @@ private:
   const bm_net_info_t *net_blocks_cache[NUM_LAYERS];
   const bm_net_info_t *net_embed;
   const bm_net_info_t *net_lm;
-  bm_tensor_t inputs_embed_512, outputs_embed_512;
+  bm_tensor_t inputs_embed1, outputs_embed1;
   bm_tensor_t inputs_lm, outputs_lm;
   bm_tensor_t inputs_pid, next_pid, inputs_attention, next_attention;
   bm_tensor_t past_key[NUM_LAYERS], past_value[NUM_LAYERS];
@@ -58,6 +57,7 @@ private:
   std::string name_blocks[NUM_LAYERS];
   std::string name_blocks_cache[NUM_LAYERS];
   int token_length;
+  int SEQLEN; // read from bmodel
   std::unique_ptr<QwenTokenizer> tk;
   std::vector<std::string> history;
 };
@@ -111,13 +111,15 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
     net_blocks_cache[i] =
         bmrt_get_network_info(p_bmrt, name_blocks_cache[i].c_str());
   }
+  assert(net_embed->stage_num == 2);
+  SEQLEN = net_embed->stages[1].input_shapes[0].dims[1]; // real seqlen
 
   // net device mem
-  ret = bmrt_tensor(&inputs_embed_512, p_bmrt, net_embed->input_dtypes[0],
+  ret = bmrt_tensor(&inputs_embed1, p_bmrt, net_embed->input_dtypes[0],
                     net_embed->stages[1].input_shapes[0]);
   assert(true == ret);
 
-  ret = bmrt_tensor(&outputs_embed_512, p_bmrt, net_embed->output_dtypes[0],
+  ret = bmrt_tensor(&outputs_embed1, p_bmrt, net_embed->output_dtypes[0],
                     net_embed->stages[1].output_shapes[0]);
   assert(true == ret);
 
@@ -148,14 +150,17 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
     ret = bmrt_tensor(&present_key[i], p_bmrt, net_blocks[0]->output_dtypes[1],
                       net_blocks[0]->stages[0].output_shapes[1]);
     assert(true == ret);
-    ret = bmrt_tensor(&present_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
-                      net_blocks[0]->stages[0].output_shapes[2]);
+    ret =
+        bmrt_tensor(&present_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
+                    net_blocks[0]->stages[0].output_shapes[2]);
     assert(true == ret);
   }
-  ret = bmrt_tensor(&present_key_cache, p_bmrt, net_blocks_cache[0]->output_dtypes[1],
+  ret = bmrt_tensor(&present_key_cache, p_bmrt,
+                    net_blocks_cache[0]->output_dtypes[1],
                     net_blocks_cache[0]->stages[0].output_shapes[1]);
   assert(true == ret);
-  ret = bmrt_tensor(&present_value_cache, p_bmrt, net_blocks_cache[0]->output_dtypes[2],
+  ret = bmrt_tensor(&present_value_cache, p_bmrt,
+                    net_blocks_cache[0]->output_dtypes[2],
                     net_blocks_cache[0]->stages[0].output_shapes[2]);
   assert(true == ret);
   ret = bmrt_tensor(&inputs_lm, p_bmrt, net_lm->input_dtypes[0],
@@ -167,8 +172,8 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
 }
 
 void QwenChat::deinit() {
-  bm_free_device(bm_handle, inputs_embed_512.device_mem);
-  bm_free_device(bm_handle, outputs_embed_512.device_mem);
+  bm_free_device(bm_handle, inputs_embed1.device_mem);
+  bm_free_device(bm_handle, outputs_embed1.device_mem);
   bm_free_device(bm_handle, inputs_lm.device_mem);
   bm_free_device(bm_handle, outputs_lm.device_mem);
   bm_free_device(bm_handle, inputs_pid.device_mem);
@@ -191,11 +196,11 @@ void QwenChat::deinit() {
 
 // after first block, move real result to end of mem
 void QwenChat::move2end(const bm_tensor_t &kv) {
-  if (token_length >= MAX_LEN) {
+  if (token_length >= SEQLEN) {
     return;
   }
   auto total_size = bm_mem_get_device_size(kv.device_mem);
-  auto bytes = total_size / MAX_LEN;
+  auto bytes = total_size / SEQLEN;
   auto real_size = token_length * bytes;
   auto mem =
       bm_mem_from_device(bm_mem_get_device_addr(kv.device_mem), real_size);
@@ -210,28 +215,26 @@ void QwenChat::move2end(const bm_tensor_t &kv) {
 }
 
 int QwenChat::forward_first(std::vector<int> &tokens) {
-  std::vector<int> input_ids(MAX_LEN, 0);
-  std::vector<int> position_id(MAX_LEN, 0);
-  std::vector<uint16_t> attention_mask(MAX_LEN * MAX_LEN, BF16_NEG_10000);
+  std::vector<int> input_ids(SEQLEN, 0);
+  std::vector<int> position_id(SEQLEN, 0);
+  std::vector<uint16_t> attention_mask(SEQLEN * SEQLEN, BF16_NEG_10000);
   std::copy(tokens.begin(), tokens.end(), input_ids.data());
 
   for (int i = 0; i < token_length; i++) {
     position_id[i] = i;
   }
   for (int i = 0; i < token_length; i++) {
-    for (int j = 0; j < MAX_LEN; j++) {
+    for (int j = 0; j < SEQLEN; j++) {
       if (j <= i) {
-        attention_mask[i * MAX_LEN + j] = 0;
+        attention_mask[i * SEQLEN + j] = 0;
       }
     }
   }
 
   // forward embeding
-  bm_memcpy_s2d(bm_handle, inputs_embed_512.device_mem,
-                (void *)input_ids.data());
-  auto ret =
-      bmrt_launch_tensor_ex(p_bmrt, name_embed.c_str(), &inputs_embed_512, 1,
-                            &outputs_embed_512, 1, true, false);
+  bm_memcpy_s2d(bm_handle, inputs_embed1.device_mem, (void *)input_ids.data());
+  auto ret = bmrt_launch_tensor_ex(p_bmrt, name_embed.c_str(), &inputs_embed1,
+                                   1, &outputs_embed1, 1, true, false);
   assert(ret);
   bm_thread_sync(bm_handle);
 
@@ -239,7 +242,7 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
   bm_memcpy_s2d(bm_handle, inputs_pid.device_mem, (void *)position_id.data());
   bm_memcpy_s2d(bm_handle, inputs_attention.device_mem,
                 (void *)attention_mask.data());
-  auto inputs_embed = outputs_embed_512;
+  auto inputs_embed = outputs_embed1;
   bm_tensor_t inputs_block[3] = {inputs_embed, inputs_pid, inputs_attention};
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_tensor_t outputs_block[3] = {inputs_embed, past_key[i], past_value[i]};
@@ -248,7 +251,7 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
     assert(ret);
     bm_thread_sync(bm_handle);
   }
-  int bytes = inputs_embed.device_mem.size / MAX_LEN;
+  int bytes = inputs_embed.device_mem.size / SEQLEN;
   bm_memcpy_d2d_byte(bm_handle, inputs_lm.device_mem, 0,
                      inputs_embed.device_mem, (token_length - 1) * bytes,
                      bytes);
@@ -261,11 +264,11 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
 }
 
 int QwenChat::forward_next() {
-  std::vector<uint16_t> attention_mask(MAX_LEN + 1, 0);
-  // for (int i = 0; i <= MAX_LEN - token_length; i++) {
+  std::vector<uint16_t> attention_mask(SEQLEN + 1, 0);
+  // for (int i = 0; i <= SEQLEN - token_length; i++) {
   //   attention_mask[i] = BF16_NEG_10000;
   // }
-  for (int i = token_length - 1; i < MAX_LEN; i++) {
+  for (int i = token_length - 1; i < SEQLEN; i++) {
     attention_mask[i] = BF16_NEG_10000;
   }
   int32_t position_id = token_length - 1;
@@ -286,17 +289,16 @@ int QwenChat::forward_next() {
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_tensor_t inputs_block[5] = {inputs_embed, next_pid, next_attention,
                                    past_key[i], past_value[i]};
-    bm_tensor_t outputs_block[3] = {inputs_embed, present_key_cache, present_value_cache};
+    bm_tensor_t outputs_block[3] = {inputs_embed, present_key_cache,
+                                    present_value_cache};
     ret = bmrt_launch_tensor_ex(p_bmrt, name_blocks_cache[i].c_str(),
                                 inputs_block, 5, outputs_block, 3, true, false);
     assert(ret);
     bm_thread_sync(bm_handle);
     bm_memcpy_d2d_byte(bm_handle, past_key[i].device_mem, token_offset,
-                       present_key_cache.device_mem, 0,
-                       bytes);
+                       present_key_cache.device_mem, 0, bytes);
     bm_memcpy_d2d_byte(bm_handle, past_value[i].device_mem, token_offset,
-                       present_value_cache.device_mem, 0,
-                       bytes);
+                       present_value_cache.device_mem, 0, bytes);
   }
   ret = bmrt_launch_tensor_ex(p_bmrt, name_lm.c_str(), &inputs_lm, 1,
                               &outputs_lm, 1, true, false);
@@ -330,14 +332,14 @@ void QwenChat::chat() {
 void QwenChat::answer(const std::string &input_str) {
   int tok_num = 0;
   history.emplace_back(std::move(input_str));
-  auto input_ids = tk->encode_history(history, MAX_LEN);
+  auto input_ids = tk->encode_history(history, SEQLEN);
   token_length = input_ids.size();
   auto time_1 = std::chrono::system_clock::now();
   int pre_token = 0;
   int token = forward_first(input_ids);
   auto time_2 = std::chrono::system_clock::now();
   std::string result;
-  while (token != tk->im_end_id && token_length < MAX_LEN) {
+  while (token != tk->im_end_id && token_length < SEQLEN) {
     std::vector<int> pre_ids = {pre_token};
     std::vector<int> ids = {pre_token, token};
     auto pre_word = tk->decode(pre_ids);
@@ -345,7 +347,7 @@ void QwenChat::answer(const std::string &input_str) {
     std::string diff = word.substr(pre_word.size());
     result += diff;
     std::cout << diff << std::flush;
-    if (token_length < MAX_LEN) {
+    if (token_length < SEQLEN) {
       token_length++;
     }
     tok_num++;
@@ -357,13 +359,13 @@ void QwenChat::answer(const std::string &input_str) {
   auto tps_dur =
       std::chrono::duration_cast<std::chrono::microseconds>(time_3 - time_2);
   double tps = tok_num / (tps_dur.count() * 1e-6);
-  if (token_length >= MAX_LEN) {
+  if (token_length >= SEQLEN) {
     printf(" ......\nWarning: cleanup early history\n");
   }
   // double tht = tokens.size() / (tht_dur.count() * 1e-6);
   printf("\nFTL:%f s, TPS: %f tokens/s\n", ftl_dur.count() * 1e-6, tps);
   history.emplace_back(result);
-  if (token_length + 128 >= MAX_LEN) {
+  if (token_length + 128 >= SEQLEN) {
     int num = (history.size() + 3) / 4 * 2;
     history.erase(history.begin(), history.begin() + num);
   }

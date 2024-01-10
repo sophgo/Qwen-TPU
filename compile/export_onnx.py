@@ -8,8 +8,8 @@
 #
 # ==============================================================================
 
-#pip install transformers_stream_generator einops tiktoken
-#export PYTHONPATH=$PWD/../Qwen-7B-Chat:$PYTHONPATH
+# pip install transformers_stream_generator einops tiktoken
+# export PYTHONPATH=$PWD/../../Qwen-7B-Chat:$PYTHONPATH
 import datetime
 import math
 import unittest
@@ -25,7 +25,7 @@ folder = "./tmp/onnx"
 device = torch.device("cuda:0")
 origin_model = AutoModelForCausalLM.from_pretrained(
     QWEN_PATH, trust_remote_code=True,
-    torch_dtype=torch.bfloat16).to(device).eval()
+    torch_dtype=torch.bfloat16, device_map="auto").eval()
 # origin_model = AutoModelForCausalLM.from_pretrained(QWEN_PATH, trust_remote_code=True, torch_dtype=torch.bfloat16).eval()
 tokenizer = AutoTokenizer.from_pretrained(QWEN_PATH, trust_remote_code=True)
 transformer = origin_model.transformer
@@ -64,7 +64,7 @@ class QwenBlock(torch.nn.Module):
             hidden_states,
             attention_mask=attention_mask,
             rotary_pos_emb_list=[[cos_pos, sin_pos]],
-            #registered_causal_mask=attention_mask,
+            # registered_causal_mask=attention_mask,
             use_cache=True)
         past_k, past_v = past_kv
         return hidden_states.float(), past_k.float(), past_v.float()
@@ -111,7 +111,8 @@ def convert_qwen_block(layer_id):
     # input
     hidden_states = torch.randn((1, MAX_LEN, 4096)).bfloat16().to(device)
     position_ids = torch.tensor([range(MAX_LEN)], dtype=torch.long).to(device)
-    attention_mask = torch.randn((1, 1, MAX_LEN, MAX_LEN)).bfloat16().to(device)
+    attention_mask = torch.randn(
+        (1, 1, MAX_LEN, MAX_LEN)).bfloat16().to(device)
     model = QwenBlock(layer_id)
     torch.onnx.export(
         model, (hidden_states, position_ids, attention_mask),
@@ -154,7 +155,7 @@ def convert_embedding():
                       input_names=['input_ids'],
                       output_names=['input_embed'],
                       dynamic_axes={"input_ids": {
-                          0: "length"
+                          1: "length"
                       }},
                       do_constant_folding=True,
                       opset_version=15)
@@ -235,13 +236,13 @@ def test_net_with_mask():
     print("\noutput_ids:{}".format(out_ids))
 
 
-#test_net_with_mask()
+# test_net_with_mask()
 
 # create folder to store onnx
 if not os.path.exists(folder):
     os.makedirs(folder)
 
-#export models
+# export models
 for i in range(num_layers):
     print("convert_block_{}".format(i))
     convert_qwen_block_cache(i)
