@@ -18,8 +18,6 @@
 #include "bmruntime_interface.h"
 #include <getopt.h>
 
-static const int NUM_LAYERS = 32;
-static const int HIDDEN_SIZE = 4096;
 static const uint16_t BF16_NEG_10000 = 0xC61C; // -9984 by bfloat16
 
 static const std::string TOKENIZER_MODEL = "qwen.tiktoken";
@@ -42,22 +40,25 @@ private:
   std::vector<bm_handle_t> handles;
   bm_handle_t bm_handle;
   void *p_bmrt;
-  const bm_net_info_t *net_blocks[NUM_LAYERS];
-  const bm_net_info_t *net_blocks_cache[NUM_LAYERS];
+  std::vector<const bm_net_info_t *> net_blocks;
+  std::vector<const bm_net_info_t *> net_blocks_cache;
   const bm_net_info_t *net_embed;
   const bm_net_info_t *net_lm;
   bm_tensor_t inputs_embed1, outputs_embed1;
   bm_tensor_t inputs_lm, outputs_lm;
   bm_tensor_t inputs_pid, next_pid, inputs_attention, next_attention;
-  bm_tensor_t past_key[NUM_LAYERS], past_value[NUM_LAYERS];
-  bm_tensor_t present_key[NUM_LAYERS], present_value[NUM_LAYERS];
+  std::vector<bm_tensor_t> past_key;
+  std::vector<bm_tensor_t> past_value;
+  std::vector<bm_tensor_t> present_key;
+  std::vector<bm_tensor_t> present_value;
   bm_tensor_t present_key_cache, present_value_cache;
   std::string name_embed;
   std::string name_lm;
-  std::string name_blocks[NUM_LAYERS];
-  std::string name_blocks_cache[NUM_LAYERS];
+  std::vector<std::string> name_blocks;
+  std::vector<std::string> name_blocks_cache;
   int token_length;
-  int SEQLEN; // read from bmodel
+  int SEQLEN;     // read from bmodel
+  int NUM_LAYERS; // read from bmodel
   std::unique_ptr<QwenTokenizer> tk;
   std::vector<std::string> history;
 };
@@ -95,24 +96,25 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
   bool ret = bmrt_load_bmodel(p_bmrt, model.c_str());
   assert(true == ret);
   printf("Done!\n");
-  // net names
+  // net embed and lm_head
   name_embed = "embedding";
   name_lm = "lm_head";
-  for (int i = 0; i < NUM_LAYERS; i++) {
-    name_blocks[i] = "qwen_block_" + std::to_string(i);
-    name_blocks_cache[i] = "qwen_block_cache_" + std::to_string(i);
-  }
-
-  // net infos
   net_embed = bmrt_get_network_info(p_bmrt, name_embed.c_str());
   net_lm = bmrt_get_network_info(p_bmrt, name_lm.c_str());
-  for (int i = 0; i < NUM_LAYERS; i++) {
-    net_blocks[i] = bmrt_get_network_info(p_bmrt, name_blocks[i].c_str());
-    net_blocks_cache[i] =
-        bmrt_get_network_info(p_bmrt, name_blocks_cache[i].c_str());
-  }
   assert(net_embed->stage_num == 2);
   SEQLEN = net_embed->stages[1].input_shapes[0].dims[1]; // real seqlen
+  auto num_nets = bmrt_get_network_number(p_bmrt);
+  NUM_LAYERS = (num_nets - 2) / 2;
+  // net blocks
+  for (int i = 0; i < NUM_LAYERS; i++) {
+    auto block_name = "qwen_block_" + std::to_string(i);
+    auto cache_name = "qwen_block_cache_" + std::to_string(i);
+    name_blocks.emplace_back(block_name);
+    name_blocks_cache.emplace_back(cache_name);
+    net_blocks.emplace_back(bmrt_get_network_info(p_bmrt, block_name.c_str()));
+    net_blocks_cache.emplace_back(
+        bmrt_get_network_info(p_bmrt, cache_name.c_str()));
+  }
 
   // net device mem
   ret = bmrt_tensor(&inputs_embed1, p_bmrt, net_embed->input_dtypes[0],
@@ -139,7 +141,10 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
       bmrt_tensor(&next_attention, p_bmrt, net_blocks_cache[0]->input_dtypes[2],
                   net_blocks_cache[0]->stages[0].input_shapes[2]);
   assert(true == ret);
-
+  past_key.resize(NUM_LAYERS);
+  past_value.resize(NUM_LAYERS);
+  present_key.resize(NUM_LAYERS);
+  present_value.resize(NUM_LAYERS);
   for (int i = 0; i < NUM_LAYERS; i++) {
     ret = bmrt_tensor(&past_key[i], p_bmrt, net_blocks[0]->output_dtypes[1],
                       net_blocks[0]->stages[0].output_shapes[1]);

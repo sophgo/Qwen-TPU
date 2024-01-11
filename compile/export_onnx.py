@@ -20,6 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import numpy as np
 
+# QWEN_PATH = "../../Qwen-14B-Chat"
 QWEN_PATH = "../../Qwen-7B-Chat"
 folder = "./tmp/onnx"
 device = torch.device("cuda:0")
@@ -30,8 +31,10 @@ origin_model = AutoModelForCausalLM.from_pretrained(
 tokenizer = AutoTokenizer.from_pretrained(QWEN_PATH, trust_remote_code=True)
 transformer = origin_model.transformer
 layers = transformer.h
-num_layers = len(layers)
-MAX_LEN = transformer.seq_length
+NUM_LAYERS = len(layers)
+SEQ_LENGTH = transformer.seq_length
+HIDDEN_SIZE = layers[0].attn.hidden_size
+NUM_HEADS = layers[0].attn.num_heads
 for param in origin_model.parameters():
     param.requires_grad = False
 
@@ -53,9 +56,9 @@ class QwenBlock(torch.nn.Module):
         # params
         self.layer_id = layer_id
         self.layer = layers[layer_id]
-        self.rotary_emb = transformer.rotary_emb(MAX_LEN)
-        self.cos_emb = self.rotary_emb[0].view(MAX_LEN, 128)
-        self.sin_emb = self.rotary_emb[1].view(MAX_LEN, 128)
+        self.rotary_emb = transformer.rotary_emb(SEQ_LENGTH)
+        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128)
+        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128)
 
     def forward(self, hidden_states, position_ids, attention_mask):
         cos_pos = self.cos_emb[position_ids].unsqueeze(2)
@@ -77,9 +80,9 @@ class QwenBlockCache(torch.nn.Module):
         # params
         self.layer_id = layer_id
         self.layer = layers[layer_id]
-        self.rotary_emb = transformer.rotary_emb(MAX_LEN)
-        self.cos_emb = self.rotary_emb[0].view(MAX_LEN, 128)
-        self.sin_emb = self.rotary_emb[1].view(MAX_LEN, 128)
+        self.rotary_emb = transformer.rotary_emb(SEQ_LENGTH)
+        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128)
+        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128)
 
     def forward(self, hidden_states, position_ids, attention_mask, past_k,
                 past_v):
@@ -109,10 +112,12 @@ class LmHead(torch.nn.Module):
 
 def convert_qwen_block(layer_id):
     # input
-    hidden_states = torch.randn((1, MAX_LEN, 4096)).bfloat16().to(device)
-    position_ids = torch.tensor([range(MAX_LEN)], dtype=torch.long).to(device)
+    hidden_states = torch.randn(
+        (1, SEQ_LENGTH, HIDDEN_SIZE)).bfloat16().to(device)
+    position_ids = torch.tensor(
+        [range(SEQ_LENGTH)], dtype=torch.long).to(device)
     attention_mask = torch.randn(
-        (1, 1, MAX_LEN, MAX_LEN)).bfloat16().to(device)
+        (1, 1, SEQ_LENGTH, SEQ_LENGTH)).bfloat16().to(device)
     model = QwenBlock(layer_id)
     torch.onnx.export(
         model, (hidden_states, position_ids, attention_mask),
@@ -126,11 +131,12 @@ def convert_qwen_block(layer_id):
 
 def convert_qwen_block_cache(layer_id):
     # input
-    hidden_states = torch.randn((1, 1, 4096)).bfloat16().to(device)
+    hidden_states = torch.randn((1, 1, HIDDEN_SIZE)).bfloat16().to(device)
     position_ids = torch.tensor([range(1)], dtype=torch.long).to(device)
-    attention_mask = torch.ones((1, 1, 1, MAX_LEN + 1)).bfloat16().to(device)
-    past_k = torch.randn((1, MAX_LEN, 32, 128)).bfloat16().to(device)
-    past_v = torch.randn((1, MAX_LEN, 32, 128)).bfloat16().to(device)
+    attention_mask = torch.ones(
+        (1, 1, 1, SEQ_LENGTH + 1)).bfloat16().to(device)
+    past_k = torch.randn((1, SEQ_LENGTH, NUM_HEADS, 128)).bfloat16().to(device)
+    past_v = torch.randn((1, SEQ_LENGTH, NUM_HEADS, 128)).bfloat16().to(device)
     model = QwenBlockCache(layer_id)
 
     torch.onnx.export(
@@ -148,22 +154,19 @@ def convert_qwen_block_cache(layer_id):
 
 def convert_embedding():
     model = Embedding()
-    input = torch.tensor([[0, 1, 2, 3]]).to(device)
+    input = torch.tensor([range(SEQ_LENGTH)]).to(device)
     torch.onnx.export(model, (input),
                       f'{folder}/embedding.onnx',
                       verbose=False,
                       input_names=['input_ids'],
                       output_names=['input_embed'],
-                      dynamic_axes={"input_ids": {
-                          1: "length"
-                      }},
                       do_constant_folding=True,
                       opset_version=15)
 
 
 def convert_lm_head():
     model = LmHead()
-    input = torch.randn(1, 4096).bfloat16().to(device)
+    input = torch.randn(1, HIDDEN_SIZE).bfloat16().to(device)
     torch.onnx.export(model, (input),
                       f'{folder}/lm_head.onnx',
                       verbose=False,
@@ -179,56 +182,56 @@ def build_prompt(query):
 
 def test_net_with_mask():
     embed = Embedding()
-    blocks = [QwenBlock(i) for i in range(num_layers)]
-    block_kvs = [QwenBlockCache(i) for i in range(num_layers)]
+    blocks = [QwenBlock(i) for i in range(NUM_LAYERS)]
+    block_kvs = [QwenBlockCache(i) for i in range(NUM_LAYERS)]
     query = '你好'
     print(query)
     promt = build_prompt(query)
     ids = tokenizer.encode(promt)
     print("input ids:{}".format(ids))
     token_len = len(ids)
-    ids = ids + (MAX_LEN - token_len) * [0]
-    input_ids = torch.tensor(ids).view(MAX_LEN)
-    out = embed(input_ids).view(1, MAX_LEN, 4096)
-    position_ids = list(range(token_len)) + (MAX_LEN - token_len) * [0]
+    ids = ids + (SEQ_LENGTH - token_len) * [0]
+    input_ids = torch.tensor(ids).view(SEQ_LENGTH)
+    out = embed(input_ids).view(1, SEQ_LENGTH, HIDDEN_SIZE)
+    position_ids = list(range(token_len)) + (SEQ_LENGTH - token_len) * [0]
     position_ids = torch.tensor([position_ids])
-    attention_mask = torch.ones((MAX_LEN, MAX_LEN)).float() * -10000.0
+    attention_mask = torch.ones((SEQ_LENGTH, SEQ_LENGTH)).float() * -10000.0
     for i in range(token_len):
         for j in range(token_len):
             if j <= i:
                 attention_mask[i][j] = 0.0
-    attention_mask = attention_mask.view(1, 1, MAX_LEN, MAX_LEN)
+    attention_mask = attention_mask.view(1, 1, SEQ_LENGTH, SEQ_LENGTH)
     k_cache = []
     v_cache = []
 
-    for i in range(num_layers):
+    for i in range(NUM_LAYERS):
         out, kv_cache = blocks[i](out, position_ids, attention_mask)
         k, v = kv_cache
-        k[:, MAX_LEN - token_len:] = k[:, :token_len]
-        v[:, MAX_LEN - token_len:] = v[:, :token_len]
-        k[:, :MAX_LEN - token_len] = 0
-        v[:, :MAX_LEN - token_len] = 0
+        k[:, SEQ_LENGTH - token_len:] = k[:, :token_len]
+        v[:, SEQ_LENGTH - token_len:] = v[:, :token_len]
+        k[:, :SEQ_LENGTH - token_len] = 0
+        v[:, :SEQ_LENGTH - token_len] = 0
         k_cache.append(k)
         v_cache.append(v)
-    out = out[:, token_len - 1:token_len].view(1, 1, 4096)
+    out = out[:, token_len - 1:token_len].view(1, 1, HIDDEN_SIZE)
     lm = LmHead()
     token = lm(out).view(1)
     out_ids = [int(token)]
     word = tokenizer.decode([int(token)])
     print(word, end="")
-    while int(token) != tokenizer.im_end_id and token_len < MAX_LEN:
+    while int(token) != tokenizer.im_end_id and token_len < SEQ_LENGTH:
         token_len += 1
         input_ids = torch.tensor([token])
-        out = embed(input_ids).view(1, 1, 4096)
+        out = embed(input_ids).view(1, 1, HIDDEN_SIZE)
         position_ids = torch.tensor([[token_len - 1]])
-        attention_mask = torch.zeros((1, 1, 1, MAX_LEN + 1)).float()
-        attention_mask[:, :, :, :MAX_LEN + 1 - token_len] = -10000.0
-        for i in range(num_layers):
+        attention_mask = torch.zeros((1, 1, 1, SEQ_LENGTH + 1)).float()
+        attention_mask[:, :, :, :SEQ_LENGTH + 1 - token_len] = -10000.0
+        for i in range(NUM_LAYERS):
             out, k_cache[i], v_cache[i] = block_kvs[i](out, position_ids,
                                                        attention_mask,
                                                        k_cache[i], v_cache[i])
-            k_cache[i][:, :MAX_LEN - token_len] = 0
-            v_cache[i][:, :MAX_LEN - token_len] = 0
+            k_cache[i][:, :SEQ_LENGTH - token_len] = 0
+            v_cache[i][:, :SEQ_LENGTH - token_len] = 0
         token = lm(out).view(1)
         out_ids.append(int(token))
         word = tokenizer.decode([int(token)])
@@ -243,7 +246,7 @@ if not os.path.exists(folder):
     os.makedirs(folder)
 
 # export models
-for i in range(num_layers):
+for i in range(NUM_LAYERS):
     print("convert_block_{}".format(i))
     convert_qwen_block_cache(i)
     convert_qwen_block(i)

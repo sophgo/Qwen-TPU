@@ -5,7 +5,7 @@ mode="int8"
 num_device=1
 quantize_args="--quantize W8BF16"
 device_args=""
-out_model=qwen-7b.bmodel
+out_model=qwen-14b.bmodel
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -41,11 +41,11 @@ else
     exit 1
 fi
 
-out_model='qwen-7b_'$mode'.bmodel'
+out_model='qwen-14b_'$mode'.bmodel'
 
 if [ x$num_device != x1 ]; then
     device_args="--num_device $num_device"
-    out_model='qwen-7b_'$mode'_'$num_device'dev.bmodel'
+    out_model='qwen-14b_'$mode'_'$num_device'dev.bmodel'
 fi
 
 outdir=tmp/embedding
@@ -113,7 +113,7 @@ mkdir -p $outdir
 pushd $outdir
 mkdir -p $outdir
 
-for i in {0..31}; do
+for i in {0..39}; do
 
     model_transform.py \
         --model_name qwen_block_$i \

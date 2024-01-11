@@ -4,6 +4,7 @@
 
 本工程实现BM1684X部署语言大模型[Qwen-7B-Chat](https://huggingface.co/Qwen/Qwen-7B-Chat)。通过[TPU-MLIR](https://github.com/sophgo/tpu-mlir)编译器将模型转换成bmodel，并采用c++代码将其部署到BM1684X的PCIE环境，或者SoC环境。
 
+本工程也支持[Qwen-14-Chat](https://huggingface.co/Qwen/Qwen-14B-Chat)，操作方法与`Qwen-7B-Chat`一致。
 
 
 ## 开发环境准备
@@ -61,10 +62,15 @@ source ./envsetup.sh
 注意此时在Docker环境workspace目录。
 
 目前TPU-MLIR支持对`Qwen-7B`进行BF16、INT8和INT4量化，且支持多芯分布式推理，默认情况下会进行INT8量化和单芯推理，最终生成`qwen-7b_int8.bmodel`文件。
-目前转INT8模型时需要在`Qwen-TPU/compile/compile.sh`中将第104行`${quantize_args} \`,改为`--quantize BF16 \`。
 
 ```shell
 ./compile.sh
+```
+
+若要编译int4，或者bf16版本，则加入`--model`参数。如下转int4，最终生成`qwen-7b_int4.bmodel`：
+
+```shell
+./compile.sh --mode int4
 ```
 
 若想进行2芯推理，则执行以下命令，最终生成`qwen-7b_int8_2dev.bmodel`文件，4芯8芯同理：
@@ -115,6 +121,10 @@ make
 
 tiktoken官方没有C++版本，只有python版本。
 本工程使用[QwenLM/qwen.cpp](https://github.com/QwenLM/qwen.cpp)中的tiktoken处理代码。
+
+### 如果编译其他seq_length的模型
+
+将Qwen模型中的config.json中`seq_length`改成对应想要的长度即可
 
 ### Qwen-7B-Chat做了哪些修改
 
