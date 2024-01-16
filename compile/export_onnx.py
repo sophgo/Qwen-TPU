@@ -191,22 +191,22 @@ def test_net_with_mask():
     print("input ids:{}".format(ids))
     token_len = len(ids)
     ids = ids + (SEQ_LENGTH - token_len) * [0]
-    input_ids = torch.tensor(ids).view(SEQ_LENGTH)
+    input_ids = torch.tensor(ids).view(SEQ_LENGTH).to(device)
     out = embed(input_ids).view(1, SEQ_LENGTH, HIDDEN_SIZE)
     position_ids = list(range(token_len)) + (SEQ_LENGTH - token_len) * [0]
-    position_ids = torch.tensor([position_ids])
+    position_ids = torch.tensor([position_ids]).to(device)
     attention_mask = torch.ones((SEQ_LENGTH, SEQ_LENGTH)).float() * -10000.0
     for i in range(token_len):
         for j in range(token_len):
             if j <= i:
                 attention_mask[i][j] = 0.0
-    attention_mask = attention_mask.view(1, 1, SEQ_LENGTH, SEQ_LENGTH)
+    attention_mask = attention_mask.view(
+        1, 1, SEQ_LENGTH, SEQ_LENGTH).to(device)
     k_cache = []
     v_cache = []
-
     for i in range(NUM_LAYERS):
-        out, kv_cache = blocks[i](out, position_ids, attention_mask)
-        k, v = kv_cache
+        out, k, v = blocks[i](out.bfloat16(), position_ids,
+                              attention_mask.bfloat16())
         k[:, SEQ_LENGTH - token_len:] = k[:, :token_len]
         v[:, SEQ_LENGTH - token_len:] = v[:, :token_len]
         k[:, :SEQ_LENGTH - token_len] = 0
@@ -215,24 +215,27 @@ def test_net_with_mask():
         v_cache.append(v)
     out = out[:, token_len - 1:token_len].view(1, 1, HIDDEN_SIZE)
     lm = LmHead()
-    token = lm(out).view(1)
+    token = lm(out.bfloat16()).view(1)
     out_ids = [int(token)]
     word = tokenizer.decode([int(token)])
     print(word, end="")
     while int(token) != tokenizer.im_end_id and token_len < SEQ_LENGTH:
         token_len += 1
-        input_ids = torch.tensor([token])
+        input_ids = torch.tensor([token]).to(device)
         out = embed(input_ids).view(1, 1, HIDDEN_SIZE)
-        position_ids = torch.tensor([[token_len - 1]])
-        attention_mask = torch.zeros((1, 1, 1, SEQ_LENGTH + 1)).float()
+        position_ids = torch.tensor([[token_len - 1]]).to(device)
+        attention_mask = torch.zeros(
+            (1, 1, 1, SEQ_LENGTH + 1)).float().to(device)
         attention_mask[:, :, :, :SEQ_LENGTH + 1 - token_len] = -10000.0
         for i in range(NUM_LAYERS):
-            out, k_cache[i], v_cache[i] = block_kvs[i](out, position_ids,
-                                                       attention_mask,
-                                                       k_cache[i], v_cache[i])
-            k_cache[i][:, :SEQ_LENGTH - token_len] = 0
-            v_cache[i][:, :SEQ_LENGTH - token_len] = 0
-        token = lm(out).view(1)
+            out, k, v = block_kvs[i](out.bfloat16(), position_ids,
+                                     attention_mask.bfloat16(),
+                                     k_cache[i].bfloat16(), v_cache[i].bfloat16())
+            k_tmp = torch.cat([k_cache[i][:, 1:], k], 1)
+            v_tmp = torch.cat([v_cache[i][:, 1:], v], 1)
+            k_cache[i][:] = k_tmp[:]
+            v_cache[i][:] = v_tmp[:]
+        token = lm(out.bfloat16()).view(1)
         out_ids.append(int(token))
         word = tokenizer.decode([int(token)])
         print(word, end="")

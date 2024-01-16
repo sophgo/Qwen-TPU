@@ -100,6 +100,7 @@ model_deploy.py \
     --quant_input \
     --quant_output \
     --chip bm1684x \
+    $device_args \
     --model lm_head.bmodel
 
 models=${models}${outdir}'/lm_head.bmodel '
@@ -126,6 +127,7 @@ for i in {0..39}; do
         --quant_input \
         --quant_output \
         --chip bm1684x \
+        $device_args \
         --model qwen_block_$i.bmodel
 
     model_transform.py \
@@ -139,6 +141,7 @@ for i in {0..39}; do
         --quant_input \
         --quant_output \
         --chip bm1684x \
+        $device_args \
         --model qwen_block_cache_$i.bmodel
 
     models=${models}${outdir}'/qwen_block_'$i'.bmodel '$outdir'/qwen_block_cache_'$i'.bmodel '

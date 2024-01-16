@@ -49,8 +49,6 @@ private:
   bm_tensor_t inputs_pid, next_pid, inputs_attention, next_attention;
   std::vector<bm_tensor_t> past_key;
   std::vector<bm_tensor_t> past_value;
-  std::vector<bm_tensor_t> present_key;
-  std::vector<bm_tensor_t> present_value;
   bm_tensor_t present_key_cache, present_value_cache;
   std::string name_embed;
   std::string name_lm;
@@ -143,21 +141,12 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
   assert(true == ret);
   past_key.resize(NUM_LAYERS);
   past_value.resize(NUM_LAYERS);
-  present_key.resize(NUM_LAYERS);
-  present_value.resize(NUM_LAYERS);
   for (int i = 0; i < NUM_LAYERS; i++) {
     ret = bmrt_tensor(&past_key[i], p_bmrt, net_blocks[0]->output_dtypes[1],
                       net_blocks[0]->stages[0].output_shapes[1]);
     assert(true == ret);
     ret = bmrt_tensor(&past_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
                       net_blocks[0]->stages[0].output_shapes[2]);
-    assert(true == ret);
-    ret = bmrt_tensor(&present_key[i], p_bmrt, net_blocks[0]->output_dtypes[1],
-                      net_blocks[0]->stages[0].output_shapes[1]);
-    assert(true == ret);
-    ret =
-        bmrt_tensor(&present_value[i], p_bmrt, net_blocks[0]->output_dtypes[2],
-                    net_blocks[0]->stages[0].output_shapes[2]);
     assert(true == ret);
   }
   ret = bmrt_tensor(&present_key_cache, p_bmrt,
@@ -190,8 +179,6 @@ void QwenChat::deinit() {
   for (int i = 0; i < NUM_LAYERS; i++) {
     bm_free_device(bm_handle, past_key[i].device_mem);
     bm_free_device(bm_handle, past_value[i].device_mem);
-    bm_free_device(bm_handle, present_key[i].device_mem);
-    bm_free_device(bm_handle, present_value[i].device_mem);
   }
   bmrt_destroy(p_bmrt);
   for (auto h : handles) {
