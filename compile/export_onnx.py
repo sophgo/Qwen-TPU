@@ -57,8 +57,8 @@ class QwenBlock(torch.nn.Module):
         self.layer_id = layer_id
         self.layer = layers[layer_id]
         self.rotary_emb = transformer.rotary_emb(SEQ_LENGTH)
-        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128)
-        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128)
+        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128).to(device)
+        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128).to(device)
 
     def forward(self, hidden_states, position_ids, attention_mask):
         cos_pos = self.cos_emb[position_ids].unsqueeze(2)
@@ -81,8 +81,8 @@ class QwenBlockCache(torch.nn.Module):
         self.layer_id = layer_id
         self.layer = layers[layer_id]
         self.rotary_emb = transformer.rotary_emb(SEQ_LENGTH)
-        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128)
-        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128)
+        self.cos_emb = self.rotary_emb[0].view(SEQ_LENGTH, 128).to(device)
+        self.sin_emb = self.rotary_emb[1].view(SEQ_LENGTH, 128).to(device)
 
     def forward(self, hidden_states, position_ids, attention_mask, past_k,
                 past_v):
