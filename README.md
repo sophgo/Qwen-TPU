@@ -4,12 +4,12 @@
 
 本工程实现BM1684X部署语言大模型[Qwen-7B-Chat](https://huggingface.co/Qwen/Qwen-7B-Chat)。通过[TPU-MLIR](https://github.com/sophgo/tpu-mlir)编译器将模型转换成bmodel，并采用c++代码将其部署到BM1684X的PCIE环境，或者SoC环境。
 
-本工程也支持[Qwen-14-Chat](https://huggingface.co/Qwen/Qwen-14B-Chat)，操作方法与`Qwen-7B-Chat`一致。
-
+* 本工程也支持[Qwen-14-Chat](https://huggingface.co/Qwen/Qwen-14B-Chat)，操作方法与`Qwen-7B-Chat`一致。
+* 本工程也支持[Qwen-1_8-Chat](https://huggingface.co/Qwen/Qwen-1_8B-Chat)，操作方法与`Qwen-7B-Chat`一致。
 
 ## 开发环境准备
 
-### 1. 下载`Qwen-7B-Chat`
+### 1. 下载模型(以`Qwen-7B-Chat`为例)
 
 ``` shell
 git lfs install
@@ -21,12 +21,13 @@ git clone git@hf.co:Qwen/Qwen-7B-Chat
 
 ### 2. 下载本项目`Qwen-TPU`
 
-下载本项目，并导出所有的ONNX，如下：
+下载本项目，并导出所有的ONNX（其中需要将本项目`files`路径下的`config.json`和`modeling_qwen.py`文件替换到原模型的文件夹下，如下：
 ``` shell
 git clone git@github.com:sophgo/Qwen-TPU.git
 
 cd Qwen-TPU
 git submodule update --init
+cp files/Qwen-7B-Chat/* ../Qwen-7B-Chat
 export PYTHONPATH=$PWD/../Qwen-7B-Chat:$PYTHONPATH
 
 cd compile
@@ -34,7 +35,7 @@ pip install transformers_stream_generator einops tiktoken
 python3 export_onnx.py
 ```
 
-因为我们采用BF16格式导出ONNX，需要您的环境上带有CUDA。默认x86不支持BF16。
+因为我们采用BF16格式导出ONNX，需要您的环境上带有CUDA。默认x86不支持BF16。14B或1_8B模型需要将`export`指定到对应路径,同时export_onnx.py中的模型路径也许做对应的修改
 
 ### 3. 下载docker，启动容器
 
