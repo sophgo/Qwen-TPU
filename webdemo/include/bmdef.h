@@ -99,6 +99,10 @@ typedef struct bm_net_info_s {
   size_t* max_output_bytes;      /* max_output_bytes[0] / [1] / ... / [output_num-1] */
   int* input_zero_point;         /* input_zero_point[0] / [1] / .../ [input_num-1] */
   int* output_zero_point;        /* output_zero_point[0] / [1] / .../ [input_num-1] */
+  int *input_loc_devices;        /* input_loc_device[0] / [1] / .../ [input_num-1] */
+  int *output_loc_devices;       /* output_loc_device[0] / [1] / .../ [output_num-1] */
+  int core_num;                  /* core number */
+  bool io_alone;                 /* whether io is alone from neuron space */
 } bm_net_info_t;
 
 typedef struct api_info_s {

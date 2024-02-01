@@ -142,6 +142,7 @@ for i in {0..31}; do
         --quant_output \
         --chip bm1684x \
         $device_args \
+        --io_alone \
         --model qwen_block_cache_$i.bmodel
 
     models=${models}${outdir}'/qwen_block_'$i'.bmodel '$outdir'/qwen_block_cache_'$i'.bmodel '
