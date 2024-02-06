@@ -64,6 +64,7 @@ model_deploy.py \
     --quant_input \
     --quant_output \
     --chip bm1684x \
+    $device_args \
     --model embedding_0.bmodel
 
 model_transform.py \
@@ -77,6 +78,7 @@ model_deploy.py \
     --quant_input \
     --quant_output \
     --chip bm1684x \
+    $device_args \
     --model embedding_1.bmodel
 
 models=$models' '$outdir'/embedding_0.bmodel '$outdir'/embedding_1.bmodel '

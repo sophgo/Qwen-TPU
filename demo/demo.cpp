@@ -49,6 +49,7 @@ private:
   int token_count;
   int SEQLEN;     // read from bmodel
   int NUM_LAYERS; // read from bmodel
+  bool io_alone;
   std::unique_ptr<QwenTokenizer> tk;
   std::vector<std::string> history;
 };
@@ -129,24 +130,26 @@ void QwenChat::init(const std::vector<int> &devices, std::string model) {
   // kv cache
   past_key.resize(NUM_LAYERS);
   past_value.resize(NUM_LAYERS);
+  io_alone = net_blocks_cache[0]->io_alone;
   for (int i = 0; i < NUM_LAYERS; i++) {
-    if (net_blocks_cache[i]->io_alone == false) {
+    assert(io_alone == net_blocks_cache[i]->io_alone);
+    if (io_alone) {
+      past_key[i] = net_blocks_cache[i]->stages[0].input_mems[3];
+      past_value[i] = net_blocks_cache[i]->stages[0].input_mems[4];
+    } else {
       auto ret = bm_malloc_device_byte(bm_handle, &past_key[i],
                                        net_blocks_cache[i]->max_input_bytes[3]);
       assert(BM_SUCCESS == ret);
       ret = bm_malloc_device_byte(bm_handle, &past_value[i],
-                                  net_blocks_cache[i]->max_input_bytes[4]);
+                                  net_blocks_cache[i]->max_output_bytes[4]);
       assert(BM_SUCCESS == ret);
-    } else {
-      past_key[i] = net_blocks_cache[i]->stages[0].input_mems[3];
-      past_value[i] = net_blocks_cache[i]->stages[0].input_mems[4];
     }
   }
 }
 
 void QwenChat::deinit() {
-  for (int i = 0; i < NUM_LAYERS; i++) {
-    if (net_blocks_cache[i]->io_alone == false) {
+  if (false == io_alone) {
+    for (int i = 0; i < NUM_LAYERS; i++) {
       bm_free_device(bm_handle, past_key[i]);
       bm_free_device(bm_handle, past_value[i]);
     }
@@ -186,8 +189,11 @@ int QwenChat::forward_first(std::vector<int> &tokens) {
     auto &in1_mem = net_blocks[idx]->stages[0].input_mems[1];
     auto &in2_mem = net_blocks[idx]->stages[0].input_mems[2];
     d2d(in0_mem, out_mem);
-    bm_memcpy_s2d(bm_handle, in1_mem, (void *)position_id.data());
-    bm_memcpy_s2d(bm_handle, in2_mem, (void *)attention_mask.data());
+    if (idx == 0) {
+      // only first time need copy
+      bm_memcpy_s2d(bm_handle, in1_mem, (void *)position_id.data());
+      bm_memcpy_s2d(bm_handle, in2_mem, (void *)attention_mask.data());
+    }
     net_launch(net_blocks[idx]);
     out_mem = net_blocks[idx]->stages[0].output_mems[0];
     d2d(past_key[idx], net_blocks[idx]->stages[0].output_mems[1]);
@@ -232,9 +238,19 @@ int QwenChat::forward_next() {
     auto &out1_mem = net_blocks_cache[idx]->stages[0].output_mems[1];
     auto &out2_mem = net_blocks_cache[idx]->stages[0].output_mems[2];
     d2d(in0_mem, out_mem);
-    bm_memcpy_s2d(bm_handle, in1_mem, (void *)&position_id);
-    bm_memcpy_s2d(bm_handle, in2_mem, (void *)attention_mask.data());
-    if (net_blocks_cache[idx]->io_alone == false) {
+    if (io_alone) {
+      if (idx == 0) {
+        bm_memcpy_s2d(bm_handle, in1_mem, (void *)&position_id);
+        bm_memcpy_s2d(bm_handle, in2_mem, (void *)attention_mask.data());
+      } else {
+        d2d(in1_mem, net_blocks_cache[0]->stages[0].input_mems[1]);
+        d2d(in2_mem, net_blocks_cache[0]->stages[0].input_mems[2]);
+      }
+    } else {
+      if (idx == 0) {
+        bm_memcpy_s2d(bm_handle, in1_mem, (void *)&position_id);
+        bm_memcpy_s2d(bm_handle, in2_mem, (void *)attention_mask.data());
+      }
       d2d(in3_mem, past_key[idx]);
       d2d(in4_mem, past_value[idx]);
     }
