@@ -95,21 +95,42 @@ make
 编译生成qwen可执行程序，将`qwen`、`qwen-7b_int8.bmodel`和`qwen.tiktoken`拷贝到同一个目录下就可以执行了。
 (`qwen.tiktoken`来自[Qwen-7B-Chat](https://huggingface.co/Qwen/Qwen-7B-Chat))。
 
-运行`qwen`:
+## 运行`qwen`
+
+### a. 命令行交互
+- 单芯推理：使用如下命令。
 ```shell
 ./qwen --model qwen-7b_int8.bmodel
 ```
 
-如果是2芯分布式推理，使用如下命令(比如指定在2号和3号芯片上运行, 用`bm-smi`查询芯片id号)：
+- 多芯分布式推理：如果是2芯分布式推理，使用如下命令(比如指定在2号和3号芯片上运行, 用`bm-smi`查询芯片id号)：
 ```shell
 ./qwen --model qwen-7b_int8_2dev.bmodel --devid 2,3
 ```
 
-## 运行效果
+#### 运行效果
 
 以下为单芯片下INT8量化模式的运行效果：
 
 ![](./assets/qwen.jpg)
+
+
+### b. 调用API
+1. 执行`pip3 install sse_starlette`，安装sse_starlette。
+2. 在`api.py`中，对`create_app()`中初始化QwenChat的参数（devid、bmodel路径和tiktoken路径）作相应修改。
+3. 执行`python3 api.py`。稍作等待，启动成功终端显示如图，可通过8000端口访问服务。
+![](assets/api_init.png)
+4. 发请求到`[设备ip]:8000/chat/completions`，请求格式为
+```json
+{
+    "question": "你知道深圳的历史吗?写一段小作文介绍下。",
+    "history": ["Hello, how are you?", "I am fine, thank you."],
+    "stream": false
+}
+```
+示例如下：
+![](assets/api_test_example.png)
+
 
 ## 常见问题
 
