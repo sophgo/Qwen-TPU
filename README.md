@@ -1,3 +1,9 @@
+## [DEPRECATED] 
+
+**This project is deprecated.** Use  [LLM-TPU](https://github.com/sophgo/LLM-TPU) instead.  Thank you. 
+
+
+
 ![](./assets/tpumlir.png)
 
 # Qwen-TPU
